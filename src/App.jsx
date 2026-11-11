@@ -1,11 +1,33 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import heroImg from './assets/hero.png'
 import reactLogo from './assets/react.svg'
 import viteLogo from './assets/vite.svg'
+import { supabase } from './lib/supabase.js'
 import './App.css'
 
 function App() {
   const [count, setCount] = useState(0)
+  const [connectionStatus, setConnectionStatus] = useState('loading')
+
+  useEffect(() => {
+    let isCurrent = true
+
+    supabase.auth.getSession()
+      .then(({ error }) => {
+        if (isCurrent) {
+          setConnectionStatus(error ? 'error' : 'connected')
+        }
+      })
+      .catch(() => {
+        if (isCurrent) {
+          setConnectionStatus('error')
+        }
+      })
+
+    return () => {
+      isCurrent = false
+    }
+  }, [])
 
   return (
     <>
@@ -17,6 +39,11 @@ function App() {
         </div>
         <div>
           <h1>Get started</h1>
+          <p role="status" aria-live="polite">
+            {connectionStatus === 'loading' && 'Tikrinamas Supabase ryšys…'}
+            {connectionStatus === 'connected' && 'Supabase ryšys veikia'}
+            {connectionStatus === 'error' && 'Supabase ryšio klaida'}
+          </p>
           <p>
             Edit <code>src/App.jsx</code> and save to test <code>HMR</code>
           </p>
