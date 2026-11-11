@@ -8,9 +8,28 @@ const authMessages = {
   signOut: 'Atsijungti nepavyko. Bandykite dar kartą.',
 }
 
+function formatRequestCount(count) {
+  if (count === null || count === undefined) return 'Skaičius nepasiekiamas'
+  const lastTwoDigits = count % 100
+  const lastDigit = count % 10
+  if (lastTwoDigits >= 11 && lastTwoDigits <= 19) return `${count} užklausų`
+  if (lastDigit === 1) return `${count} užklausa`
+  if (lastDigit >= 2 && lastDigit <= 9) return `${count} užklausos`
+  return `${count} užklausų`
+}
+
 function App() {
   const [session, setSession] = useState(null)
   const [isInitializing, setIsInitializing] = useState(true)
+  const [isUserMenuOpen, setIsUserMenuOpen] = useState(false)
+  const [openProjectMenuId, setOpenProjectMenuId] = useState('')
+  const [projectSearch, setProjectSearch] = useState('')
+  const userMenuRef = useRef(null)
+  const userMenuButtonRef = useRef(null)
+  const userMenuItemRef = useRef(null)
+  const projectMenuRootRef = useRef(null)
+  const projectMenuButtonRefs = useRef(new Map())
+  const projectMenuItemRef = useRef(null)
   const sessionUserIdRef = useRef(null)
   const authEventVersionRef = useRef(0)
   const projectLoadIdRef = useRef(0)
@@ -28,6 +47,8 @@ function App() {
 
   const [screen, setScreen] = useState('list')
   const [projects, setProjects] = useState([])
+  const [requestCounts, setRequestCounts] = useState({})
+  const [projectCountError, setProjectCountError] = useState('')
   const [selectedProjectId, setSelectedProjectId] = useState('')
   const [requests, setRequests] = useState([])
   const [requestsForProjectId, setRequestsForProjectId] = useState('')
@@ -65,6 +86,8 @@ function App() {
           projectLoadIdRef.current += 1
           requestLoadIdRef.current += 1
           setProjects([])
+          setRequestCounts({})
+          setProjectCountError('')
           setRequests([])
           setRequestsForProjectId('')
           setSelectedProjectId('')
@@ -105,6 +128,71 @@ function App() {
     }
   }, [])
 
+  useEffect(() => {
+    if (!isUserMenuOpen) return undefined
+    userMenuItemRef.current?.focus()
+
+    function handleOutsidePointer(event) {
+      if (!userMenuRef.current?.contains(event.target)) setIsUserMenuOpen(false)
+    }
+    function handleMenuKeyDown(event) {
+      if (event.key === 'Escape') {
+        setIsUserMenuOpen(false)
+        userMenuButtonRef.current?.focus()
+      } else if (event.key === 'Tab') {
+        setIsUserMenuOpen(false)
+      } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        const items = [...(userMenuRef.current?.querySelectorAll('[role="menuitem"]:not(:disabled)') ?? [])]
+        if (items.length) {
+          event.preventDefault()
+          const currentIndex = items.indexOf(document.activeElement)
+          const direction = event.key === 'ArrowDown' ? 1 : -1
+          items[(currentIndex + direction + items.length) % items.length]?.focus()
+        }
+      }
+    }
+
+    document.addEventListener('pointerdown', handleOutsidePointer)
+    document.addEventListener('keydown', handleMenuKeyDown)
+    return () => {
+      document.removeEventListener('pointerdown', handleOutsidePointer)
+      document.removeEventListener('keydown', handleMenuKeyDown)
+    }
+  }, [isUserMenuOpen])
+
+  useEffect(() => {
+    if (!openProjectMenuId) return undefined
+    projectMenuItemRef.current?.focus()
+
+    function handleOutsidePointer(event) {
+      if (!projectMenuRootRef.current?.contains(event.target)) setOpenProjectMenuId('')
+    }
+    function handleMenuKeyDown(event) {
+      if (event.key === 'Escape') {
+        const menuId = openProjectMenuId
+        setOpenProjectMenuId('')
+        projectMenuButtonRefs.current.get(menuId)?.focus()
+      } else if (event.key === 'Tab') {
+        setOpenProjectMenuId('')
+      } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        const items = [...(projectMenuRootRef.current?.querySelectorAll('[role="menuitem"]:not(:disabled)') ?? [])]
+        if (items.length) {
+          event.preventDefault()
+          const currentIndex = items.indexOf(document.activeElement)
+          const direction = event.key === 'ArrowDown' ? 1 : -1
+          items[(currentIndex + direction + items.length) % items.length]?.focus()
+        }
+      }
+    }
+
+    document.addEventListener('pointerdown', handleOutsidePointer)
+    document.addEventListener('keydown', handleMenuKeyDown)
+    return () => {
+      document.removeEventListener('pointerdown', handleOutsidePointer)
+      document.removeEventListener('keydown', handleMenuKeyDown)
+    }
+  }, [openProjectMenuId])
+
   const loadProjects = useCallback(async (userId, preferredProjectId) => {
     if (!userId) return
     const loadId = ++projectLoadIdRef.current
@@ -119,6 +207,24 @@ function App() {
       if (error) throw error
       if (loadId !== projectLoadIdRef.current || sessionUserIdRef.current !== userId) return
       setProjects(data ?? [])
+      let nextRequestCounts = Object.fromEntries((data ?? []).map((project) => [project.id, null]))
+      let requestCountMessage = ''
+      try {
+        const { data: requestRows, error: countError } = await supabase
+          .from('requests')
+          .select('project_id')
+          .eq('user_id', userId)
+        if (countError) throw countError
+        nextRequestCounts = Object.fromEntries((data ?? []).map((project) => [project.id, 0]))
+        for (const request of requestRows ?? []) {
+          nextRequestCounts[request.project_id] = (nextRequestCounts[request.project_id] ?? 0) + 1
+        }
+      } catch {
+        requestCountMessage = 'Užklausų skaičių įkelti nepavyko.'
+      }
+      if (loadId !== projectLoadIdRef.current || sessionUserIdRef.current !== userId) return
+      setRequestCounts(nextRequestCounts)
+      setProjectCountError(requestCountMessage)
       const currentProjectId = selectedProjectIdRef.current
       const nextProjectId = data?.some((project) => project.id === preferredProjectId)
         ? preferredProjectId
@@ -169,6 +275,10 @@ function App() {
         || selectedProjectIdRef.current !== projectId) return
       setRequests(data ?? [])
       setRequestsForProjectId(projectId)
+      setRequestCounts((current) => ({
+        ...current,
+        [projectId]: (data ?? []).length,
+      }))
       setHasLoadedRequests(true)
     } catch {
       if (loadId === requestLoadIdRef.current && sessionUserIdRef.current === userId
@@ -270,6 +380,7 @@ function App() {
   }
 
   function openScreen(nextScreen) {
+    setOpenProjectMenuId('')
     setDataError('')
     setSuccessMessage('')
     setScreen(nextScreen)
@@ -287,9 +398,15 @@ function App() {
   }
 
   function beginProjectEdit(project) {
+    setOpenProjectMenuId('')
     setEditingProjectId(project.id)
     setEditingProjectName(project.name)
     setDataError('')
+  }
+
+  function toggleProjectMenu(projectId, button) {
+    projectMenuButtonRefs.current.set(projectId, button)
+    setOpenProjectMenuId((current) => current === projectId ? '' : projectId)
   }
 
   async function handleUpdateProject(event, projectId) {
@@ -371,6 +488,11 @@ function App() {
       setIsLoadingRequests(false)
       const nextProjects = projects.filter((item) => item.id !== project.id)
       setProjects(nextProjects)
+      setRequestCounts((current) => {
+        const nextCounts = { ...current }
+        delete nextCounts[project.id]
+        return nextCounts
+      })
       if (selectedProjectId === project.id) {
         const nextProjectId = nextProjects[0]?.id ?? ''
         selectedProjectIdRef.current = nextProjectId
@@ -465,6 +587,10 @@ function App() {
       requestLoadIdRef.current += 1
       setIsLoadingRequests(false)
       setRequests((current) => current.filter((item) => item.id !== request.id))
+      setRequestCounts((current) => ({
+        ...current,
+        [request.project_id]: Math.max(0, (current[request.project_id] ?? 0) - 1),
+      }))
       if (editingRequestId === request.id) setEditingRequestId('')
       setSuccessMessage('Užklausa ištrinta.')
     } catch {
@@ -496,6 +622,7 @@ function App() {
         .single()
       if (error) throw error
       setProjects((current) => [data, ...current])
+      setRequestCounts((current) => ({ ...current, [data.id]: 0 }))
       selectedProjectIdRef.current = data.id
       setSelectedProjectId(data.id)
       setProjectName('')
@@ -539,6 +666,10 @@ function App() {
       if (error) throw error
       setRequests((current) => [data, ...current])
       setRequestsForProjectId(data.project_id)
+      setRequestCounts((current) => ({
+        ...current,
+        [data.project_id]: (current[data.project_id] ?? 0) + 1,
+      }))
       setHasLoadedRequests(true)
       setRequestTitle('')
       setUrgency('normal')
@@ -554,6 +685,7 @@ function App() {
 
   const selectedProject = projects.find((project) => project.id === selectedProjectId)
   const projectNames = Object.fromEntries(projects.map((project) => [project.id, project.name]))
+  const filteredProjects = projects.filter((project) => project.name.toLocaleLowerCase('lt-LT').includes(projectSearch.trim().toLocaleLowerCase('lt-LT')))
 
   if (isInitializing) {
     return <main className="page-shell"><p className="loading" role="status">Tikrinama prisijungimo būsena…</p></main>
@@ -598,7 +730,19 @@ function App() {
     <main className="app-shell">
       <header className="app-header">
         <a className="brand" href="/" aria-label="Smart Requests pradžia"><span className="brand-mark">S</span> Smart Requests</a>
-        <div className="account-tools"><span className="account-email">{session.user.email}</span><button className="button button-secondary signout-button" type="button" onClick={handleSignOut} disabled={isSubmitting || Boolean(activeRecordAction)}>{isSubmitting ? 'Atsijungiama…' : 'Atsijungti'}</button></div>
+        <div className="account-tools">
+          <div className="user-menu" ref={userMenuRef}>
+            <button className="user-menu-trigger" type="button" ref={userMenuButtonRef} aria-haspopup="menu" aria-expanded={isUserMenuOpen} aria-controls="user-menu-popup" onClick={() => setIsUserMenuOpen((isOpen) => !isOpen)}>
+              <svg className="user-menu-icon" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="6.5" r="3" /><path d="M3.5 17a6.5 6.5 0 0 1 13 0" /></svg>
+              <span>Vartotojas</span>
+              <svg className="user-menu-chevron" viewBox="0 0 12 12" aria-hidden="true"><path d="m2.5 4.5 3.5 3 3.5-3" /></svg>
+            </button>
+            {isUserMenuOpen && <div className="user-menu-popup" id="user-menu-popup" role="menu" aria-label="Vartotojo meniu">
+              <span className="user-menu-email" role="none">{session.user.email}</span>
+              <button className="user-menu-signout" type="button" role="menuitem" ref={userMenuItemRef} onClick={() => { setIsUserMenuOpen(false); handleSignOut() }} disabled={isSubmitting || Boolean(activeRecordAction)}>{isSubmitting ? 'Atsijungiama…' : 'Atsijungti'}</button>
+            </div>}
+          </div>
+        </div>
       </header>
 
       <section className="workspace">
@@ -646,17 +790,27 @@ function App() {
             {isLoadingProjects && <p className="inline-loading" role="status">Kraunami projektai…</p>}
             {!isLoadingProjects && hasLoadedProjects && projects.length === 0 && !projectError && !dataError && <div className="empty-state"><div className="empty-illustration" aria-hidden="true">＋</div><h2>Pradėkite nuo pirmo projekto</h2><p>Projektai padeda tvarkingai grupuoti susijusias užklausas.</p><button className="button button-primary compact-button" type="button" onClick={() => openScreen('createProject')}>Sukurti pirmą projektą</button></div>}
             {projects.length > 0 && <>
-              <div className="list-toolbar"><div><h2>Jūsų užklausos</h2><p>Pasirinkite projektą, kad peržiūrėtumėte jo užklausas.</p></div><label className="project-picker"><span>Projektas</span><select className="text-input" aria-label="Pasirinkti projektą" value={selectedProjectId} onChange={(event) => selectProject(event.target.value)}>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label></div>
-              <div className="project-strip"><span className="project-strip-label">JŪSŲ PROJEKTAI</span>{projects.map((project) => <div className="project-item" key={project.id}>
+              <div className="list-toolbar"><div><h2>Projektai</h2><p>Pasirinkite projektą, kad peržiūrėtumėte jo užklausas.</p></div><label className="project-search"><span className="sr-only">Ieškoti projekto</span><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5" /><path d="m13 13 4 4" /></svg><input type="search" placeholder="Ieškoti projekto..." value={projectSearch} onChange={(event) => setProjectSearch(event.target.value)} /></label></div>
+              {projectCountError && <p className="count-warning" role="status">{projectCountError} Kortelėse vietoje skaičiaus rodoma brūkšnys.</p>}
+              {filteredProjects.length > 0 ? <div className="project-grid">{filteredProjects.map((project) => <article className={project.id === selectedProjectId ? 'project-card selected' : 'project-card'} key={project.id}>
                 {editingProjectId === project.id ? <form className="project-edit-form" onSubmit={(event) => handleUpdateProject(event, project.id)}>
-                  <input className="inline-edit-input" aria-label="Projekto pavadinimas" value={editingProjectName} onChange={(event) => setEditingProjectName(event.target.value)} maxLength={120} disabled={Boolean(activeRecordAction)} autoFocus />
-                  <button className="inline-action save" type="submit" disabled={Boolean(activeRecordAction)}>{activeRecordAction === `project:${project.id}` ? 'Saugoma…' : 'Išsaugoti'}</button>
-                  <button className="inline-action" type="button" onClick={() => setEditingProjectId('')} disabled={Boolean(activeRecordAction)}>Atšaukti</button>
-                </form> : <>
-                  <button type="button" className={project.id === selectedProjectId ? 'project-chip selected' : 'project-chip'} onClick={() => selectProject(project.id)} disabled={Boolean(activeRecordAction)}>{project.name}</button>
-                  <div className="project-actions"><button className="inline-action" type="button" onClick={() => beginProjectEdit(project)} disabled={Boolean(activeRecordAction) || isSaving}>Redaguoti</button><button className="inline-action danger" type="button" onClick={() => handleDeleteProject(project)} disabled={Boolean(activeRecordAction) || isSaving}>{activeRecordAction === `project:${project.id}` ? 'Trinama…' : 'Ištrinti'}</button></div>
-                </>}
-              </div>)}</div>
+                  <label className="field-label" htmlFor={`project-edit-${project.id}`}>Projekto pavadinimas</label>
+                  <input id={`project-edit-${project.id}`} className="inline-edit-input" value={editingProjectName} onChange={(event) => setEditingProjectName(event.target.value)} maxLength={120} disabled={Boolean(activeRecordAction)} autoFocus />
+                  <div className="project-edit-actions"><button className="inline-action save" type="submit" disabled={Boolean(activeRecordAction)}>{activeRecordAction === `project:${project.id}` ? 'Saugoma…' : 'Išsaugoti'}</button><button className="inline-action" type="button" onClick={() => setEditingProjectId('')} disabled={Boolean(activeRecordAction)}>Atšaukti</button></div>
+                </form> : <button type="button" className="project-card-select" onClick={() => selectProject(project.id)} aria-pressed={project.id === selectedProjectId} disabled={Boolean(activeRecordAction)}>
+                  <span className="project-card-indicator" aria-hidden="true" />
+                  <strong title={project.name}>{project.name}</strong>
+                  <span className="project-card-count">{formatRequestCount(requestCounts[project.id])}</span>
+                </button>}
+                <div className="project-menu-wrap" ref={openProjectMenuId === project.id ? projectMenuRootRef : null}>
+                  <button className="project-menu-trigger" type="button" aria-label={`Veiksmai projektui ${project.name}`} aria-haspopup="menu" aria-expanded={openProjectMenuId === project.id} aria-controls={`project-menu-${project.id}`} ref={(element) => { if (element) projectMenuButtonRefs.current.set(project.id, element); else projectMenuButtonRefs.current.delete(project.id) }} onClick={(event) => toggleProjectMenu(project.id, event.currentTarget)} disabled={Boolean(activeRecordAction) || Boolean(editingProjectId) || Boolean(editingRequestId) || isSaving}>•••</button>
+                  {openProjectMenuId === project.id && <div className="project-menu-popup" id={`project-menu-${project.id}`} role="menu" aria-label={`Projekto ${project.name} veiksmai`}>
+                    <button type="button" role="menuitem" ref={projectMenuItemRef} onClick={() => beginProjectEdit(project)}>Redaguoti</button>
+                    <button className="danger" type="button" role="menuitem" onClick={() => { setOpenProjectMenuId(''); handleDeleteProject(project) }}>Ištrinti</button>
+                  </div>}
+                </div>
+              </article>)}</div> : <div className="project-search-empty" role="status">Projektų pagal „{projectSearch.trim()}“ nerasta.</div>}
+              <div className="request-section-heading"><h2>Užklausos</h2>{selectedProject && <span>Projektas: {selectedProject.name}</span>}</div>
               {isLoadingRequests && <p className="inline-loading" role="status">Kraunamos užklausos…</p>}
               {!isLoadingRequests && hasLoadedRequests && requestsForProjectId === selectedProjectId && requests.length === 0 && !requestError && !dataError && <div className="empty-requests"><span className="empty-requests-icon">☰</span><div><h3>Šiame projekte užklausų dar nėra</h3><p>Sukurkite pirmą užklausą projektui „{selectedProject?.name}“.</p></div><button className="button button-primary compact-button" type="button" onClick={() => openScreen('createRequest')}>Sukurti užklausą</button></div>}
               {!isLoadingRequests && requestsForProjectId === selectedProjectId && requests.length > 0 && <div className="request-list"><div className="request-list-header"><span>Užklausa</span><span>Projektas</span><span>Prioritetas</span><span>Sukurta</span><span>Veiksmai</span></div>{requests.filter((request) => request.project_id === selectedProjectId).map((request) => <article className="request-row" key={request.id}>
